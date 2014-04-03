@@ -1,5 +1,7 @@
 package df
-
+/*
+ * only a structure used when choosing classification attribute
+ */
 class AttributeInfo(
   var gainRatio: Double,
   var attributeValues: Array[String],

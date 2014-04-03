@@ -6,16 +6,28 @@ import org.apache.spark.rdd._
 import scala.util.Random
 import scala.xml._
 import scala.io.Source
-
+/*
+ * Random Forest 
+ * The core Map-Reduce method is very similar to df (decision forest) in Mahout
+ * We use XML to store decision trees.
+ */
 class RandomForest(
+    //missing value  
   val missValue: String,
+  //the name of features
   val featureName: Array[String],
+  //whether the feature is numerical
   val featureIsNumerical: Array[Boolean],
+  //the number of trees to build per worker
   val numTree: Int,
+  //the number of dimensions of the features
   val M: Int,
+  //the number of features for each tree
   val m: Int)
   extends Serializable {
-
+/*
+ * select m numbers in [0,M)
+ */
   private def randomIndices(m: Int, M: Int): Array[Int] = {
     if (m < M && m > 0) {
       var result = Array.fill(m)(0)
@@ -37,7 +49,9 @@ class RandomForest(
       result
     }
   }
-
+/*
+ * calculate the entropy of an array
+ */
   private def entropy(buf: Array[String]): Double = {
     val len = buf.length
     val invLog2 = 1.0 / Math.log(2)
@@ -56,18 +70,22 @@ class RandomForest(
     }
   }
 
+  /*
+   * bootstrap sampling (out of bag)
+   */
   def bagging(data: Array[Instance]): Array[Instance] = {
 
     val len = data.length
 
     var result = data
-    //var result=Array.fill(len)()
     for (i <- 0 until len) {
       result(i) = data(Random.nextInt(len))
     }
     result
   }
-
+/*
+ * calculate the entropy gain ratio of a numerical attribute 
+ */
   private def gainRatioNumerical(att_cat: Array[(String, String)], ent_cat: Double): AttributeInfo = {
     val sorted = att_cat.map(line => (line._1.toDouble, line._2)).sortBy(line => line._1)
     val catValues = sorted.map(line => line._2)
@@ -105,8 +123,10 @@ class RandomForest(
       }
     }
   }
-
-  private def gainRatioCategorial(att_cat: Array[(String, String)], ent_cat: Double): AttributeInfo = {
+/*
+ * calculate the entropy gain ratio of a categorical attribute 
+ */
+  private def gainRatioCategorical(att_cat: Array[(String, String)], ent_cat: Double): AttributeInfo = {
     val att = att_cat.map(obs => obs._1)
     val values = att.distinct
     if (values.length != 1) {
@@ -123,7 +143,9 @@ class RandomForest(
       new AttributeInfo(0, values)
     }
   }
-
+/*
+ * calculate the majority in an array
+ */
   def majority(buf: Array[String]): String = {
     var major = buf(0)
     var majorityNum = 0
@@ -136,7 +158,9 @@ class RandomForest(
     }
     major
   }
-
+/*
+ * the core function to grow an un-pruning tree
+ */
   def growTree(data: Array[Instance], featureIndice: Array[Int], branch: String = ""): Elem = {
 
     var attList = Set[AttributeInfo]()
@@ -158,14 +182,16 @@ class RandomForest(
             attInfo.setIndice(i)
             attList ++= Set(attInfo)
           } else {
-            val attInfo = gainRatioCategorial(att_cat, ent_cat)
+            val attInfo = gainRatioCategorical(att_cat, ent_cat)
             attInfo.setIndice(i)
             attList ++= Set(attInfo)
 
           }
         }
-        // println(i)
       }
+      /*
+       * find the best attribute for classification
+       */
       val chosen = attList.maxBy(_.gainRatio)
       if (chosen.gainRatio == 0) {
         <node branch={ branch }>
@@ -174,7 +200,7 @@ class RandomForest(
         </node>
 
       } else {
-        if (featureIsNumerical(chosen.indice)) {
+        if (featureIsNumerical(chosen.indice)) {//numerical attribute
           val splitPoint = chosen.attributeValues(0).toDouble
           val lochilddata = data.filter { obs =>
             val j = obs.features(chosen.indice)
@@ -198,7 +224,7 @@ class RandomForest(
             }</priorDecision>
           </node>
 
-        } else {
+        } else {//categorical attribute
 
           var priorDecision = ""
           var majorityNum = 0
@@ -235,6 +261,10 @@ class RandomForest(
     var total_len = data.count
 
     var indieces = List
+    /*
+     * it's like Mahout decision forest which builds a random forest using partial data. 
+     * Each worker uses only the data given by its partition.
+     */
     var forest = data.mapPartitionsWithIndex { (index, obs) =>
 
       val partial = obs.toArray
@@ -244,9 +274,8 @@ class RandomForest(
 
         println("Tree:" + i + " vol:" + oob.length)
 
-        val node = growTree(oob, featureIndice)
-        //println(node)
-        node
+        growTree(oob, featureIndice)
+        
       }
       treesPerWorker.iterator
     }.collect
@@ -267,6 +296,9 @@ object RandomForest {
       val M = data.first.features.length
       var featureName = Array[String]()
       var featureIsNumerical = Array[Boolean]()
+      /*
+       * read the XML
+       */
       for (att <- info\"attribute") {
         featureName++=Array(att.text)
         if((att\"@type").toString=="C"){
@@ -279,6 +311,11 @@ object RandomForest {
       rf.run(data)
     }
 
+  /*
+   * Main function
+   * The attribute description should be given by info_dir.
+   * We can save the random forest in a XML file named save_dir.
+   */
   def main(args: Array[String]) {
     if (args.length != 4) {
       println("Usage: RandomForest <master> <input_dir> <info_dir> <save_dir>")

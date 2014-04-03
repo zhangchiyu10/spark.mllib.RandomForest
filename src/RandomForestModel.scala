@@ -2,14 +2,16 @@ package df
 
 import org.apache.spark.rdd.RDD
 import scala.xml._
-import scala.xml.Node
 import java.io.File
 class RandomForestModel(
   var forest: Array[Elem],
   var missValue: String)
   extends Serializable {
   def this() = { this(Array[Elem](), "?") }
-  def loadForest(load_dir: String) :RandomForestModel= {
+  /*
+   * load a forest from a folder with XML files
+   */
+  def loadForest(load_dir: String): RandomForestModel = {
 
     this.forest = Array[Elem]()
     val files = new File(load_dir)
@@ -18,6 +20,18 @@ class RandomForestModel(
     }
     this
   }
+  /*
+   * save the trees in a folder 
+   */
+  def save(save_dir: String) {
+
+    for (i <- 1 to forest.length) {
+      XML.save(save_dir + "/tree" + i + ".xml", forest(i - 1))
+    }
+  }
+  /*
+   * the final decision is by majority
+   */
   def majority(buf: Array[String]): String = {
     var major = buf(0)
     var majorityNum = 0
@@ -30,15 +44,17 @@ class RandomForestModel(
     }
     major
   }
-
-  def classify(features: Array[String], tree: scala.xml.Node): String = {
+  /*
+ * core classify function which can deal with data point with missing value
+ */
+  def classify(features: Array[String], tree: Node): String = {
     if ((tree \ "type").text == "L") {
       (tree \ "result").text
     } else {
       val value = features((tree \ "indice").text.toInt)
       val nodes = tree \ "node"
 
-      if ((tree \ "type").text == "N") {
+      if ((tree \ "type").text == "N") { //numerical attribute
         if (value == missValue) {
           classify(features, nodes.filter { x => (x \ "@branch").toString == (tree \ "priorDecision").text }(0))
         } else {
@@ -48,7 +64,7 @@ class RandomForestModel(
             classify(features, nodes.filter { x => (x \ "@branch").toString == "low" }(0))
           }
         }
-      } else {
+      } else { //categorical attribute
         val node = nodes.filter { x => (x \ "@branch").toString == value }
         if (node.length == 0) {
           classify(features, nodes.filter { x => (x \ "@branch").toString == (tree \ "priorDecision").text }(0))
@@ -60,6 +76,7 @@ class RandomForestModel(
     }
 
   }
+
   def predict(features: Array[String]): String = {
 
     val votes = for (tree <- forest) yield {
@@ -67,12 +84,6 @@ class RandomForestModel(
     }
     majority(votes)
 
-  }
-  def save(save_dir: String) {
-
-    for (i <- 1 to forest.length) {
-      XML.save(save_dir + "/tree" + i + ".xml", forest(i - 1))
-    }
   }
 
 }
