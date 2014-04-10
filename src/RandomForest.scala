@@ -12,22 +12,38 @@ import scala.io.Source
  * We use XML to store decision trees.
  */
 class RandomForest(
-    //missing value  
+  /*
+   * missing value
+   */
   val missValue: String,
-  //the name of features
+  /*
+   * the name of features
+   */
   val featureName: Array[String],
-  //whether the feature is numerical
+  /*
+   * whether the feature is numerical
+   */
   val featureIsNumerical: Array[Boolean],
-  //the number of trees to build per worker
+  /*
+   * the number of trees to build per worker 
+   */
   val numTree: Int,
-  //the number of dimensions of the features
+  /*
+   * the number of dimensions of the features
+   */
   val M: Int,
-  //the number of features for each tree
-  val m: Int)
+  /*
+   * the number of features for each tree
+   */
+  val m: Int,
+  /*
+   * m selected features' indices 
+   */
+  var featureIndice: Array[Int] = null)
   extends Serializable {
-/*
- * select m numbers in [0,M)
- */
+  /*
+   * select m numbers in [0,M)
+   */
   private def randomIndices(m: Int, M: Int): Array[Int] = {
     if (m < M && m > 0) {
       var result = Array.fill(m)(0)
@@ -49,9 +65,9 @@ class RandomForest(
       result
     }
   }
-/*
- * calculate the entropy of an array
- */
+  /*
+   * calculate the entropy of an array
+   */
   private def entropy(buf: Array[String]): Double = {
     val len = buf.length
     val invLog2 = 1.0 / Math.log(2)
@@ -71,23 +87,27 @@ class RandomForest(
   }
 
   /*
-   * bootstrap sampling (out of bag)
+   * bootstrap sampling and select m features
    */
-  def bagging(data: Array[Instance]): Array[Instance] = {
+  def baggingAndSelectFeatures(data: Array[Instance]): Array[Instance] = {
 
     val len = data.length
 
-    var result = data
-    for (i <- 0 until len) {
-      result(i) = data(Random.nextInt(len))
+    val result = for (i <- 0 until len) yield {
+      val point = data(Random.nextInt(len))
+      var selectedFeatures = Array.fill(m)("")
+      for (j <- 0 until m) {
+        selectedFeatures(j) = point.features(featureIndice(j))
+      }
+      Instance(point.label, selectedFeatures)
     }
-    result
+    result.toArray
   }
-/*
+  /*
  * calculate the entropy gain ratio of a numerical attribute 
  */
   private def gainRatioNumerical(att_cat: Array[(String, String)], ent_cat: Double): AttributeInfo = {
-    val sorted = att_cat.map(line => (line._1.toDouble, line._2)).sortBy(line => line._1)
+    val sorted = att_cat.map(line => (line._1.toDouble, line._2)).sortBy(_._1)
     val catValues = sorted.map(line => line._2)
     val attValues = sorted.map(line => line._1)
     if (attValues.distinct.length == 1) {
@@ -123,17 +143,17 @@ class RandomForest(
       }
     }
   }
-/*
+  /*
  * calculate the entropy gain ratio of a categorical attribute 
  */
   private def gainRatioCategorical(att_cat: Array[(String, String)], ent_cat: Double): AttributeInfo = {
-    val att = att_cat.map(obs => obs._1)
+    val att = att_cat.map(_._1)
     val values = att.distinct
     if (values.length != 1) {
       var gain = ent_cat
       val invL = 1.0 / att_cat.length
       for (i <- values) {
-        val cat_i = att_cat.filter(obs => obs._1 == i).map(obs => obs._2)
+        val cat_i = att_cat.filter(_._1 == i).map(_._2)
         gain -= cat_i.length * invL * entropy(cat_i)
       }
 
@@ -143,10 +163,10 @@ class RandomForest(
       new AttributeInfo(0, values)
     }
   }
-/*
+  /*
  * calculate the majority in an array
  */
-  def majority(buf: Array[String]): String = {
+  def majority(buf: Array[String]): (String, Double) = {
     var major = buf(0)
     var majorityNum = 0
     for (i <- buf.distinct) {
@@ -156,35 +176,34 @@ class RandomForest(
         major = i
       }
     }
-    major
+    (major, majorityNum.toDouble / buf.length)
   }
-/*
+  /*
  * the core function to grow an un-pruning tree
  */
-  def growTree(data: Array[Instance], featureIndice: Array[Int], branch: String = ""): Elem = {
+  def growTree(data: Array[Instance], branch: String = ""): Elem = {
 
-    var attList = Set[AttributeInfo]()
-    val cat = data.map(obs => obs.label)
+    var attList = List[AttributeInfo]()
+    val cat = data.map(_.label)
     val ent_cat = entropy(cat)
 
     if (ent_cat == 0) {
-      <node branch={ branch }>
-        <type>L</type>
-        <result>{ data(0).label }</result>
+      <node branch={ branch } type="L">
+        <decision p="1">{ data(0).label }</decision>
       </node>
     } else {
-      for (i <- featureIndice) {
-        val att_cat = data.filter(obs => obs.features(i) != missValue)
+      for (i <- 0 until m) {
+        val att_cat = data.filter(_.features(i) != missValue)
           .map(obs => (obs.features(i), obs.label))
         if (att_cat.length > 0) {
-          if (featureIsNumerical(i)) {
+          if (featureIsNumerical(featureIndice(i))) {
             val attInfo = gainRatioNumerical(att_cat, ent_cat)
             attInfo.setIndice(i)
-            attList ++= Set(attInfo)
+            attList ::= attInfo
           } else {
             val attInfo = gainRatioCategorical(att_cat, ent_cat)
             attInfo.setIndice(i)
-            attList ++= Set(attInfo)
+            attList ::= attInfo
 
           }
         }
@@ -194,13 +213,18 @@ class RandomForest(
        */
       val chosen = attList.maxBy(_.gainRatio)
       if (chosen.gainRatio == 0) {
-        <node branch={ branch }>
-          <type>L</type>
-          <result>{ majority(data.map(x => x.label)) }</result>
+        val (decision, p) = majority(data.map(_.label))
+        <node branch={ branch } type="L">
+          <decision p={ p.formatted("%.3f") }>{ decision }</decision>
         </node>
 
       } else {
-        if (featureIsNumerical(chosen.indice)) {//numerical attribute
+        var priorDecision = ""
+        val indice = featureIndice(chosen.indice)
+        if (featureIsNumerical(indice)) {
+          /*
+           * numerical attribute
+           */
           val splitPoint = chosen.attributeValues(0).toDouble
           val lochilddata = data.filter { obs =>
             val j = obs.features(chosen.indice)
@@ -211,28 +235,35 @@ class RandomForest(
             val j = obs.features(chosen.indice)
             j != missValue && j.toDouble > splitPoint
           }
-
-          <node branch={ branch }>
-            <name>{ featureName(chosen.indice) }</name>
-            <indice>{ chosen.indice }</indice>
-            <type>N</type>
-            <splitPoint>{ splitPoint }</splitPoint>
-            { growTree(lochilddata, featureIndice, "low") }
-            { growTree(hichilddata, featureIndice, "high") }
-            <priorDecision>{
-              if (lochilddata.length >= hichilddata.length) "low" else "high"
+          var p = lochilddata.length.toDouble / data.length
+          if (p <= 0.5) {
+            p = 1 - p
+            priorDecision = "high"
+          } else {
+            priorDecision = "low"
+          }
+          <node branch={ branch } 
+                type="N" 
+                name={ featureName(indice) } 
+                indice={ indice.toString } 
+                splitPoint={ splitPoint.formatted("%.2e") }>
+            { growTree(lochilddata, "low") }
+            { growTree(hichilddata, "high") }
+            <priorDecision p={ p.formatted("%.3f") }>{
+              priorDecision
             }</priorDecision>
           </node>
 
-        } else {//categorical attribute
-
-          var priorDecision = ""
+        } else {
+          /*
+           * categorical attribute
+           */
           var majorityNum = 0
 
-          <node branch={ branch }>
-          	<name>{ featureName(chosen.indice) }</name>
-          	<indice>{ chosen.indice }</indice>
-            <type>C</type>
+          <node branch={ branch } 
+                type="C" 
+                name={ featureName(indice) } 
+                indice={ indice.toString }>
             {
               for (i <- chosen.attributeValues) yield {
                 val child = data.filter { obs =>
@@ -243,10 +274,12 @@ class RandomForest(
                   majorityNum = child.length
                   priorDecision = i
                 }
-                growTree(child, featureIndice, i)
+                growTree(child, i)
               }
             }
-            <priorDecision>{ priorDecision }</priorDecision>
+            <priorDecision p={ (majorityNum.toDouble / data.length).formatted("%.3f") }>{
+              priorDecision
+            }</priorDecision>
           </node>
 
         }
@@ -255,27 +288,21 @@ class RandomForest(
     }
 
   }
-
+  /*
+   * it's very similar to Mahout decision forest which builds a random forest using partial data. 
+   * Each worker uses only the data given by its partition.
+   */
   def run(data: RDD[Instance]): RandomForestModel = {
-    var M = data.first.features.length
+
     var total_len = data.count
-
-    var indieces = List
-    /*
-     * it's like Mahout decision forest which builds a random forest using partial data. 
-     * Each worker uses only the data given by its partition.
-     */
     var forest = data.mapPartitionsWithIndex { (index, obs) =>
-
       val partial = obs.toArray
       val treesPerWorker = for (i <- 1 to numTree) yield {
-        val oob = bagging(partial)
-        val featureIndice = randomIndices(m, M)
+        featureIndice = randomIndices(m, M)
+        val oob = baggingAndSelectFeatures(partial)
+        //println("Tree:" + i + " vol:" + oob.length)
+        growTree(oob)
 
-        println("Tree:" + i + " vol:" + oob.length)
-
-        growTree(oob, featureIndice)
-        
       }
       treesPerWorker.iterator
     }.collect
@@ -288,27 +315,30 @@ object RandomForest {
 
   def train(
     data: RDD[Instance],
-    info:Elem,
+    info: Elem,
     missValue: String,
     m: Int,
     numTree: Int): RandomForestModel =
     {
-      val M = data.first.features.length
-      var featureName = Array[String]()
-      var featureIsNumerical = Array[Boolean]()
       /*
        * read the XML
        */
-      for (att <- info\"attribute") {
-        featureName++=Array(att.text)
-        if((att\"@type").toString=="C"){
-          featureIsNumerical++=Array(false)
-        }else{
-          featureIsNumerical++=Array(true)
+      var featureName = Array[String]()
+      var featureIsNumerical = Array[Boolean]()
+      for (att <- info \ "attribute") {
+        featureName ++= Array(att.text)
+        if ((att \ "@type").toString == "C") {
+          featureIsNumerical ++= Array(false)
+        } else {
+          featureIsNumerical ++= Array(true)
         }
       }
-      val rf = new RandomForest(missValue, featureName, featureIsNumerical, numTree, M, m)
-      rf.run(data)
+      val M = featureIsNumerical.length
+      if (m < M) {
+        new RandomForest(missValue, featureName, featureIsNumerical, numTree, M, m).run(data)
+      } else {
+        new RandomForest(missValue, featureName, featureIsNumerical, numTree, M, M).run(data)
+      }
     }
 
   /*
@@ -317,29 +347,29 @@ object RandomForest {
    * We can save the random forest in a XML file named save_dir.
    */
   def main(args: Array[String]) {
-    if (args.length != 4) {
-      println("Usage: RandomForest <master> <input_dir> <info_dir> <save_dir>")
+    if (args.length != 6) {
+      println("Usage: RandomForest <master> <input_dir> <info_dir> <save_dir> <m> <treesPerWorker>")
       System.exit(1)
     }
-    val (master, inputFile, infoFile, save_dir) = (args(0), args(1), args(2), args(3))
+    val (master, inputFile, infoFile, save_dir, m, treesPerWorker) = (args(0), args(1), args(2), args(3), args(4).toInt, args(5).toInt)
 
     val sc = new SparkContext(master, "RandomForest")
     val data = sc.textFile(inputFile).map { line =>
       val parts = line.split(',')
       Instance(parts.last, parts.init)
     }.cache()
-    val info=XML.load(infoFile)
-    val missValue="?"
-    val model = RandomForest.train(data, info, missValue, 26, 3)
 
+    val info = XML.load(infoFile)
+    val missValue = "?"
+    var model = RandomForest.train(data, info, missValue, m, treesPerWorker)
     model.save(save_dir)
-    //val model=new RandomForestModel().loadForest(save_dir)
-    val labelAndPreds = data.map { obs =>
-      val prediction = model.predict(obs.features)
-      (obs.label, prediction)
-    }
-    val trainErr = labelAndPreds.filter(r => r._1 != r._2).count.toDouble / labelAndPreds.count
-    println("Training Error=" + trainErr)
+    model = new RandomForestModel().loadForest(save_dir)
+    val trainErr = data.filter { obs =>
+      val pred = model.predict(obs.features)
+        pred != obs.label
+      }.count.toDouble / data.count
+
+    println("Training Error=" + err.sum / err.length)
 
   }
 }
