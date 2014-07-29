@@ -369,7 +369,7 @@ object RandomForest {
         pred != obs.label
       }.count.toDouble / data.count
 
-    println("Training Error=" + err.sum / err.length)
+    println("Training Error=" + trainErr )
 
   }
 }
